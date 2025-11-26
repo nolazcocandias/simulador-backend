@@ -6,35 +6,76 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+function generarMovimientos(pallets, meses) {
+  const inVals = new Array(meses).fill(0);
+  const outVals = new Array(meses).fill(0);
+
+  for (let i = 0; i < pallets; i++) {
+    inVals[Math.floor(Math.random() * meses)]++;
+  }
+
+  let stock = 0;
+  for (let i = 0; i < meses; i++) {
+    stock += inVals[i];
+    let maxOut = (i === meses - 1) ? stock : Math.floor(Math.random() * (stock + 1));
+    outVals[i] = maxOut;
+    stock -= maxOut;
+  }
+  return { inVals, outVals };
+}
+
 app.post('/simular', (req, res) => {
-  const { uf, pallets, meses } = req.body;
-
   try {
-    const workbook = XLSX.readFile('simulacion.xlsx');
-    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    let { uf, pallets, meses } = req.body;
+    uf = Number(uf);
+    pallets = Number(pallets);
+    meses = Math.min(Math.max(Number(meses), 1), 12);
 
-    sheet['B2'].v = uf;
-    sheet['B3'].v = pallets;
-    sheet['B4'].v = meses;
+    if (!uf || !pallets || !meses) {
+      return res.status(400).json({ error: 'Parámetros inválidos (uf, pallets, meses)' });
+    }
+
+    const workbook = XLSX.readFile('simulacion.xlsx');
+    const sheetName = workbook.SheetNames.includes('cliente') ? 'cliente' : workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+
+    if (!sheet) {
+      return res.status(500).json({ error: 'Hoja no encontrada en Excel' });
+    }
+
+    const { inVals, outVals } = generarMovimientos(pallets, meses);
+
+    for (let i = 0; i < 12; i++) {
+      sheet['D' + (9 + i)] = { t: 'n', v: 0 };
+      sheet['E' + (9 + i)] = { t: 'n', v: 0 };
+    }
+    for (let i = 0; i < meses; i++) {
+      sheet['D' + (9 + i)] = { t: 'n', v: inVals[i] };
+      sheet['E' + (9 + i)] = { t: 'n', v: outVals[i] };
+    }
 
     XLSX.writeFile(workbook, 'simulacion.xlsx');
 
-    const resultado = {
-      palletParking: uf * pallets * meses,
-      tradicional: uf * pallets * meses * 1.2,
-      ahorro: uf * pallets * meses * 0.8,
-      tabla: Array.from({ length: meses }, (_, i) => ({
-        mes: i + 1,
-        entradas: Math.floor(Math.random() * 10),
-        salidas: Math.floor(Math.random() * 10),
-        stock: Math.floor(Math.random() * 50),
-      })),
-    };
+    const tabla = [];
+    let stockCalc = 0;
+    for (let i = 0; i < meses; i++) {
+      const r = 9 + i;
+      const entradas = sheet['D' + r]?.v || 0;
+      const salidas = sheet['E' + r]?.v || 0;
+      stockCalc += entradas - salidas;
+      tabla.push({ mes: i + 1, entradas, salidas, stock: stockCalc });
+    }
 
-    res.json(resultado);
+    const palletParking = sheet['P103']?.v || 0;
+    const tradicional = sheet['P104']?.v || 0;
+    const ahorro = sheet['P105']?.v || (tradicional - palletParking);
+
+    res.json({ palletParking, tradicional, ahorro, tabla });
   } catch (err) {
+    console.error('Error en /simular:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(3000, () => console.log('Servidor en puerto 3000'));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Servidor en puerto ${PORT}`));
