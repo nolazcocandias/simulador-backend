@@ -55,6 +55,97 @@ async function loadXlsxCalc() {
   }
 }
 
+function colLetterToNumber(col) {
+  let n = 0;
+  for (let i = 0; i < col.length; i++) {
+    n = n * 26 + (col.charCodeAt(i) - 64);
+  }
+  return n;
+}
+function numberToCol(n) {
+  let s = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+function ensureReferencedCellsExist(workbook) {
+  const created = [];
+
+  const cellRefRegex = /(?:(?:'([^']+)'|([A-Za-z0-9_]+))!)?([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?/g;
+
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) continue;
+
+    // Iterate all cells in sheet looking for formulas
+    for (const addr of Object.keys(sheet)) {
+      if (!/^[A-Z]+[0-9]+$/.test(addr)) continue; // skip non-cell keys like '!ref'
+      const cell = sheet[addr];
+      if (cell && cell.f && typeof cell.f === 'string') {
+        const formula = cell.f;
+        let m;
+        while ((m = cellRefRegex.exec(formula)) !== null) {
+          const quotedSheet = m[1];
+          const simpleSheet = m[2];
+          const targetSheetName = quotedSheet || simpleSheet || sheetName;
+          const startCol = m[3];
+          const startRow = parseInt(m[4], 10);
+          const endCol = m[5];
+          const endRow = m[6] ? parseInt(m[6], 10) : null;
+
+          const targetSheet = workbook.Sheets[targetSheetName];
+          if (!workbook.Sheets[targetSheetName]) {
+            // si la hoja objetivo no existe, no podemos crear celdas ahí; registramos y seguimos
+            created.push({ sheet: targetSheetName, cell: null, note: 'sheet-not-found' });
+            continue;
+          }
+
+          if (!endRow) {
+            // celda simple, crear si no existe
+            const ref = `${startCol}${startRow}`;
+            if (!targetSheet[ref]) {
+              targetSheet[ref] = { t: 'n', v: 0 };
+              created.push({ sheet: targetSheetName, cell: ref });
+            }
+          } else {
+            // rango: si es columna fija (A1:A10), expandimos filas
+            if (startCol === endCol) {
+              const col = startCol;
+              const rStart = startRow;
+              const rEnd = endRow;
+              for (let r = rStart; r <= rEnd; r++) {
+                const rr = `${col}${r}`;
+                if (!targetSheet[rr]) {
+                  targetSheet[rr] = { t: 'n', v: 0 };
+                  created.push({ sheet: targetSheetName, cell: rr });
+                }
+              }
+            } else {
+              // rango multi-columna: creamos al menos las celdas de inicio y fin para evitar undefined
+              const ref1 = `${startCol}${startRow}`;
+              const ref2 = `${endCol}${endRow}`;
+              if (!targetSheet[ref1]) {
+                targetSheet[ref1] = { t: 'n', v: 0 };
+                created.push({ sheet: targetSheetName, cell: ref1 });
+              }
+              if (!targetSheet[ref2]) {
+                targetSheet[ref2] = { t: 'n', v: 0 };
+                created.push({ sheet: targetSheetName, cell: ref2 });
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return created;
+}
+
 app.post('/simular', async (req, res) => {
   try {
     let { uf, pallets, meses } = req.body;
@@ -94,6 +185,14 @@ app.post('/simular', async (req, res) => {
 
     sheet['W57'] = { t: 'n', v: uf };
 
+    // Antes de ejecutar xlsx-calc: asegurar que las referencias usadas por las fórmulas existen como objetos de celda
+    const createdRefs = ensureReferencedCellsExist(workbook);
+    if (createdRefs.length > 0) {
+      console.log('Se crearon celdas faltantes para evitar undefined al calcular:', createdRefs.slice(0, 200));
+    } else {
+      console.log('No se detectaron celdas faltantes a crear.');
+    }
+
     const { fn: calcFn, meta } = await loadXlsxCalc();
     if (!calcFn) {
       console.error('No se detectó función de cálculo en xlsx-calc. meta:', meta);
@@ -105,11 +204,9 @@ app.post('/simular', async (req, res) => {
       await calcFn(workbook);
       console.log('Cálculo completado satisfactoriamente.');
     } catch (calcErr) {
-      // Debug avanzado: extraer celdas mencionadas en el mensaje de error y devolver su estado
       const msg = String(calcErr && calcErr.message ? calcErr.message : calcErr);
       console.error('Error durante la ejecución de xlsx-calc:', msg);
 
-      // Extraer referencias tipo A1 (p.ej. D103, W57, J96)
       const matches = (msg.match(/([A-Z]+\d+)/g) || []).map(s => s.trim());
       const uniqueCells = [...new Set(matches)];
 
@@ -124,10 +221,8 @@ app.post('/simular', async (req, res) => {
         };
       });
 
-      // Nombres definidos en el workbook (si existen)
       const definedNames = workbook.Workbook?.Names || workbook.Names || [];
 
-      // Loguear para Render
       console.error('DebugCells:', JSON.stringify(debugCells, null, 2));
       console.error('Defined names:', JSON.stringify(definedNames, null, 2));
 
@@ -136,7 +231,8 @@ app.post('/simular', async (req, res) => {
         detail: msg,
         xlsxCalcMeta: meta,
         debugCells,
-        definedNames
+        definedNames,
+        createdRefs: createdRefs.slice(0, 500)
       });
     }
 
