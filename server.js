@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import XLSX from 'xlsx';
+import XLSX_CALC from 'xlsx-calc';
 
 const app = express();
 app.use(cors());
@@ -54,16 +55,21 @@ app.post('/simular', (req, res) => {
       sheet['E' + (9 + i)] = { t: 'n', v: outVals[i] };
     }
 
+    // Escribir UF si corresponde
+    sheet['W57'] = { t: 'n', v: uf };
+
+    // Recalcular fórmulas con xlsx-calc
+    XLSX_CALC(workbook);
+
     XLSX.writeFile(workbook, 'simulacion.xlsx');
 
     const tabla = [];
-    let stockCalc = 0;
     for (let i = 0; i < meses; i++) {
       const r = 9 + i;
       const entradas = sheet['D' + r]?.v || 0;
       const salidas = sheet['E' + r]?.v || 0;
-      stockCalc += entradas - salidas;
-      tabla.push({ mes: i + 1, entradas, salidas, stock: stockCalc });
+      const stock = sheet['G' + r]?.v || 0;
+      tabla.push({ mes: i + 1, entradas, salidas, stock });
     }
 
     const palletParking = sheet['P103']?.v || 0;

@@ -1,6 +1,6 @@
 {
   "name": "simulador-backend",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -9,6 +9,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "xlsx-calc": "^0.4.0"
   }
 }
